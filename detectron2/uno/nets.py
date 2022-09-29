@@ -116,7 +116,8 @@ class CosMLP(nn.Module):
         sa_matrix = self.sa_matrix.to(input_adjust_features.device)
         targets = sa_matrix[fg_gt_classes,:]
        
-        targets[(fg_gt_classes >= self.seen_classes)] = (uno_logits[(fg_gt_classes >= self.seen_classes)]>=0.8).to(torch.float32)
+        # targets = targets[(fg_gt_classes >= self.seen_classes)]
+        # targets[(fg_gt_classes >= self.seen_classes)] = (uno_logits[(fg_gt_classes >= self.seen_classes)]>=0.8).to(torch.float32)
 
         loss_uno = F.binary_cross_entropy_with_logits(
             uno_logits.reshape(-1),
