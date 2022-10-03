@@ -714,9 +714,20 @@ class FastRCNNOutputs:
         """
         return {"loss_cls": self.softmax_cross_entropy_loss(), 
         "loss_box_reg": self.box_reg_loss(),
-        "loss_sa_cls":self.sa_cross_entropy_loss()
+        "loss_sa_cls":self.sa_cross_entropy_loss(),
+        "loss_reg":self.get_reg_loss()
         }
 
+    def get_reg_loss(self):
+        
+        x = torch.mean(F.softmax(self.pred_class_logits, dim=1), 0)[:-1]
+        # print(data.shape)
+        
+        x_ =  torch.clamp(x, min = 1e-8)
+        b =  x_ * torch.log(x_)
+        
+        return - b.sum()
+    
     def sa_cross_entropy_loss(self):
         """
         Compute the softmax cross entropy loss for box classification.
@@ -1384,6 +1395,7 @@ class FastRCNNOutputLayers(nn.Module):
             self.smooth_l1_beta,
             self.box_reg_loss_type,
         ).losses()
+        
         # losses['loss_new_clustering'] = self.get_new_clustering_loss(proposals,input_features)
 
         # losses['loss_mlp'] = self.get_mlp_loss(sa_semantic,proposals,input_features)
