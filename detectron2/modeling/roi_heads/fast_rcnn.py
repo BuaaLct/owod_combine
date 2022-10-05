@@ -22,6 +22,7 @@ from detectron2.uno.nets import MultiHeadResNet
 from detectron2.clip_utils import ClipProcess
 from detectron2.modeling.binary_matcher import build_matcher
 from detectron2.uno.nets import CosMLP
+from detectron2.uno.nets import MLP
 from detectron2.modeling.roi_heads.kl_loss import get_cluster_prob
 import numpy as np
 
@@ -715,13 +716,11 @@ class FastRCNNOutputs:
         return {"loss_cls": self.softmax_cross_entropy_loss(), 
         "loss_box_reg": self.box_reg_loss(),
         "loss_sa_cls":self.sa_cross_entropy_loss(),
-        "loss_reg":self.get_reg_loss()
+        # "loss_reg":self.get_reg_loss()
         }
 
     def get_reg_loss(self):
-        
         x = torch.mean(F.softmax(self.pred_class_logits, dim=1), 0)[:-1]
-        # print(data.shape)
         
         x_ =  torch.clamp(x, min = 1e-8)
         b =  x_ * torch.log(x_)
@@ -915,7 +914,7 @@ class FastRCNNOutputLayers(nn.Module):
         self.uno_means = [None for _ in range(10)]
         self.uno_feature_store = Store(10, clustering_items_per_class)
 
-        # self.ae_model = AE(input_size, clustering_z_dimension)
+        # self.ae_model = AE(input_size, clusteMLPring_z_dimension)
         # self.ae_model.apply(Xavier)
 
         self.uno_model = MultiHeadResNet(
@@ -923,9 +922,10 @@ class FastRCNNOutputLayers(nn.Module):
             10,
         )
 
-        sa_uno_model=MultiHeadResNet(self.seen_classes, 10, feat_dim=512)
+        self.sa_projector = MLP(input_dim=512,hidden_dim=1024,output_dim=2048)
+        # sa_uno_model=MultiHeadResNet(self.seen_classes, 10, feat_dim=512)
         
-        self.sa_unk_head_unlab=sa_uno_model.head_unlab
+        # self.sa_unk_head_unlab=sa_uno_model.head_unlab
 
         self.clip_process = ClipProcess()
 
@@ -937,6 +937,8 @@ class FastRCNNOutputLayers(nn.Module):
         self.cos = nn.CosineSimilarity(dim=-1, eps=1e-6)
         
         self.update_start_iter = 16000
+        
+        # next(self.sa_projector.parameters()).device
 
     @classmethod
     def from_config(cls, cfg, input_shape):
@@ -1011,6 +1013,32 @@ class FastRCNNOutputLayers(nn.Module):
 
         # self.feature_store.add(F.normalize(features, dim=0), gt_classes)
         # self.feature_store.add(self.ae_model.encoder(features), gt_classes)
+    def center_semantic_loss(self,device):
+        
+        sa_centers = self.clip_process.get_text_features(device=device)[:-1].to(device=device)
+        sa_centers = self.sa_projector(sa_centers)
+        # print(sa_centers.shape)
+        mse = nn.MSELoss(reduction='mean')
+        
+        all_means = self.means
+        for item in all_means:
+            if item != None:
+                length = item.shape
+                break
+        # length = (2048,)
+        for i, item in enumerate(all_means):
+            if item == None:
+                all_means[i] = torch.zeros((length))
+        
+        visual_centers = torch.stack(all_means).cuda()[:-1]
+        
+        visual_centers[self.invalid_class_range] = 0.0
+        sa_centers[self.invalid_class_range] = 0.0
+        
+        loss = mse(sa_centers,visual_centers)
+        
+        return loss
+        
 
     def clstr_loss_l2_cdist(self, input_features, proposals):
         """
@@ -1106,7 +1134,7 @@ class FastRCNNOutputLayers(nn.Module):
     def get_clustering_loss(self, input_features, proposals):
         if not self.enable_clustering:
             return 0
-
+        
         storage = get_event_storage()
         c_loss = 0
         if storage.iter == self.clustering_start_iter:
@@ -1115,10 +1143,9 @@ class FastRCNNOutputLayers(nn.Module):
                 if len(item) == 0:
                     self.means[index] = None
                 else:
-                    print(torch.tensor(item).shape)
                     mu = torch.tensor(item).mean(dim=0)
                     self.means[index] = mu
-            c_loss = self.clstr_loss_l2_cdist(input_features, proposals)
+            c_loss = self.center_semantic_loss(input_features.device)
             # Freeze the parameters when clustering starts
             # for param in self.ae_model.parameters():
             #     param.requires_grad = False
@@ -1138,7 +1165,7 @@ class FastRCNNOutputLayers(nn.Module):
                         self.means[i] = self.clustering_momentum * mean + \
                                         (1 - self.clustering_momentum) * new_means[i]
 
-            c_loss = self.clstr_loss_l2_cdist(input_features, proposals)
+            c_loss = self.center_semantic_loss(input_features.device)
         return c_loss
 
     # def get_ae_loss(self, input_features):
@@ -1401,9 +1428,9 @@ class FastRCNNOutputLayers(nn.Module):
         # losses['loss_mlp'] = self.get_mlp_loss(sa_semantic,proposals,input_features)
         # losses["loss_semantic"] = self.get_sa_loss3(sa_semantic,proposals,input_features)
 
-        # if input_features is not None:
+        if input_features is not None:
         #     # losses["loss_cluster_encoder"] = self.get_ae_loss(input_features)
-            # losses["loss_clustering"] = self.get_clustering_loss(input_features, proposals)
+            losses["loss_clustering"] = self.get_clustering_loss(input_features, proposals)
         return {k: v * self.loss_weight.get(k, 1.0) for k, v in losses.items()}
 
     def uno_inference(self, input_features):
