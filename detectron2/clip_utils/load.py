@@ -76,8 +76,8 @@ class ClipProcess:
         with torch.no_grad():
             self.cuda_text_features = self.cuda_clip_model.encode_text(text_token)
             self.cpu_text_features = self.cuda_clip_model.encode_text(text_token)
-            self.cuda_super_text_token = torch.rand((10,512))
-            self.cpu_super_text_token = self.cuda_super_text_token
+            self.cuda_super_text_token = self.cuda_clip_model.encode_text(super_text_token)
+            self.cpu_super_text_token = self.cuda_clip_model.encode_text(super_text_token)
 
     def get_super_features(self, device):
         if device == 'cuda':
