@@ -654,6 +654,13 @@ class Res5ROIHeads(ROIHeads):
         input_features = box_features.mean(dim=[2, 3])
         predictions = self.box_predictor(input_features)
         
+        use_attention = True
+        if use_attention:
+            # print(predictions[0].shape)
+            predictions = (self.box_predictor.attentin_cls_score(input_features),predictions[1],predictions[2],predictions[3])
+            # predictions[0] = self.attentin_cls_score(input_features)
+            
+        
         if self.training:
             
             # 按照本轮的已知类的score 调整未知类的label

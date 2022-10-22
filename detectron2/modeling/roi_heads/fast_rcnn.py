@@ -855,14 +855,25 @@ class FastRCNNOutputLayers(nn.Module):
         if isinstance(input_shape, int):  # some backward compatibility
             input_shape = ShapeSpec(channels=input_shape)
         input_size = input_shape.channels * (input_shape.width or 1) * (input_shape.height or 1)
+        self.input_size = input_size
         # prediction layer for num_classes foreground classes and one background class (hence + 1)
         self.cls_score = Linear(input_size, num_classes + 1)
+        
+        # attention module
+        self.atten_cls_score = Linear(input_size*2 , num_classes + 1)
+        self.Wy = nn.Linear(input_size, input_size)
+        self.Wz = nn.Linear(512, input_size)
+        nn.init.normal_(self.Wy.weight,std=0.02)
+        nn.init.normal_(self.Wz.weight,std=0.02)
+        nn.init.normal_(self.atten_cls_score.weight,std=0.01)
+        for l in [self.Wz, self.Wy,self.atten_cls_score]:
+            nn.init.constant_(l.bias, 0)
+
         num_bbox_reg_classes = 1 if cls_agnostic_bbox_reg else num_classes
         box_dim = len(box2box_transform.weights)
         self.bbox_pred = Linear(input_size, num_bbox_reg_classes * box_dim)
         self.feature_to_sa = nn.Linear(2048, 512)
         self.sa_to_cls = nn.Linear(512, num_classes + 1)
-
         nn.init.normal_(self.cls_score.weight, std=0.01)
         nn.init.normal_(self.bbox_pred.weight, std=0.001)
         nn.init.normal_(self.feature_to_sa.weight,std=0.01)
@@ -1001,6 +1012,31 @@ class FastRCNNOutputLayers(nn.Module):
         # scores = self.mlp_model.inference(x,sa_semantic,scores)
         return scores, proposal_deltas,sa_semantic,sa_cls_scores
 
+    def attentin_cls_score(self, input_features):
+        device = input_features.device
+        sa_dic = self.clip_process.get_text_features(device).cuda()
+        
+        projector_sa = self.Wz(sa_dic)
+        # print('sa',sa_features.shape)
+        attention = torch.mm(self.Wy(input_features), projector_sa.t()) / (self.input_size ** 0.5)
+        attention[:,self.invalid_class_range] = 1e-10
+        attention = F.softmax(attention, 1)
+        
+        z_hat = attention.unsqueeze(2) * projector_sa.unsqueeze(0)
+        # print(z_hat.shape)
+        z_hat = z_hat.sum(dim=1)
+        # print(z_hat.shape)
+        
+        concat_features = torch.cat([input_features,z_hat],dim=1)
+        # print(concat_features.shape)
+        atten_scores = self.atten_cls_score(concat_features)
+        
+        return atten_scores
+        
+        
+        
+         
+    
     def update_feature_store(self, features, proposals):
         # cat(..., dim=0) concatenates over all images in the batch
         gt_classes = torch.cat([p.gt_classes for p in proposals])
