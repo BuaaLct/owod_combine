@@ -1444,6 +1444,44 @@ class FastRCNNOutputLayers(nn.Module):
             torch.nn.functional.normalize(language_embeds, dim=-1))
         language_sims = language_sims.reshape(*language_sims.shape[:2], -1)
         return language_sims
+    
+    def get_unknown_in_see_class_topK_loss(self, input_features, proposals, input_scores):
+        gt_classes = torch.cat([item.gt_classes for item in proposals])
+        input_features = input_features[gt_classes == self.num_classes - 1]
+        input_scores = input_scores[gt_classes == self.num_classes - 1]
+        input_scores = input_scores[..., :self.seen_classes]
+        labels = input_scores.topk(3, -1)[1]
+
+        label_embeds = self.clip_process.get_text_features(device=input_features.device)
+
+        t = label_embeds[labels].mean(1)
+        lang_embeds = t.unsqueeze(1)
+
+        r = []
+        for i in range(labels.size(0)):
+            a = labels[i].tolist()
+            a.sort()
+            r.append([])
+            for j in range(labels.size(0)):
+                b = labels[j].tolist()
+                b.sort()
+                r[-1].append(a == b)
+
+        bsame_labels = torch.tensor(r).to(input_features.device)
+
+        language_sims = self.compute_language_sims(lang_embeds)
+        language_sims = language_sims.mean(dim=-1)
+        language_sims += self.language_shift
+        maskval = 1 + self.language_shift
+
+        img_sims = input_features.mm(input_features.T)
+
+        return kl_div(language_sims.detach().to(img_sims.device),
+                      img_sims,
+                      mask=bsame_labels,
+                      maskval=maskval,
+                      T=1)
+    
     # TODO: move the implementation to this class.
     def losses(self, predictions, proposals, input_features=None, unknown=None):
         """
@@ -1470,8 +1508,8 @@ class FastRCNNOutputLayers(nn.Module):
         ).losses()
         losses['loss_new_clustering'] = self.get_new_clustering_loss(proposals,input_features)
 
-        losses['unknown_lang_loss'] = 0.1 * self.get_unknown_lang_loss(input_features, proposals, scores)
-        
+        # losses['unknown_lang_loss'] = 0.1 * self.get_unknown_lang_loss(input_features, proposals, scores)
+        losses['unknown_in_see_class_topK_loss'] = 0.1 * self.get_unknown_in_see_class_topK_loss(input_features, proposals, scores)
         # losses['loss_mlp'] = self.get_mlp_loss(sa_semantic,proposals,input_features)
         # losses["loss_semantic"] = self.get_sa_loss3(sa_semantic,proposals,input_features)
 
